@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local TermPilot data: never commit indexes, context logs, or shell history
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+context.log
+*_history
+.zsh_history
+!tests/fixtures/*_history
+
+# Benchmark output (results worth keeping are copied into docs/ by hand)
+benchmark-results/
+
+# Secrets and machine-specific configuration
+.env
+.env.*
+*.pem
+*.key
+config.local.toml
+
+# OS / editor noise
+.DS_Store
+.idea/
+.vscode/

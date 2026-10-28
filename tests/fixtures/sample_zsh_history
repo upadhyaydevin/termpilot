@@ -1,0 +1,14 @@
+: 1700000000:0;git status
+: 1700000060:2;git checkout main
+: 1700000120:0;ls -la
+: 1700000180:5;docker compose up -d
+plain-command --without-timestamp
+: 1700000240:0;git status
+: 1700000300:1;echo first line\
+second line
+: 1700000360:0;
+: 1700000420:0;cd ~/projects/demo
+: 1700000480:0;git checkout -b feature/search
+: 1700000540:0;python -m pytest -q
+: 1700000600:0;echo café
+: 1700000660:0;git status

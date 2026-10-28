@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "termpilot"
+version = "0.1.0"
+description = "Local-first, history-based inline command suggestions for Zsh"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = []
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Shells",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "mypy>=1.5", "black>=24", "flake8>=6"]
+
+[project.scripts]
+termpilot = "termpilot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+termpilot = ["shell/*.zsh"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "zsh: drives a real interactive zsh through a pseudo-terminal (skipped if zsh is missing)",
+]
+
+[tool.black]
+line-length = 99
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src/termpilot"]
