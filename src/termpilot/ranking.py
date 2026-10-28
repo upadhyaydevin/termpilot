@@ -54,6 +54,8 @@ class RankingConfig:
     context_saturation: int = 20
     # Inputs shorter than this (after stripping) produce no suggestions.
     min_input_length: int = 2
+    # Longer inputs (e.g. a pasted script) produce no suggestions.
+    max_input_length: int = 512
     max_suggestions: int = 5
 
 
@@ -200,9 +202,16 @@ def merge_duplicates(candidates: Iterable[object]) -> list[Candidate]:
 
 
 def _fuzzy_prefilter(query: str) -> re.Pattern[str]:
-    # A cheap C-level check that the query is a subsequence of the command,
-    # so the slower Python scoring only runs on plausible candidates.
-    return re.compile(".*?".join(re.escape(ch) for ch in query), re.IGNORECASE | re.DOTALL)
+    """A cheap C-level "is ``query`` a subsequence of the command?" check.
+
+    Use with ``.match()``. Each ``(?>.*?c)`` is an atomic group: it commits to
+    the leftmost next occurrence of ``c`` and never backtracks into it.
+    Leftmost choices are always optimal for subsequence matching, so this is
+    exact and linear-time. (The naive ``a.*?b.*?c`` pattern backtracks
+    catastrophically, e.g. ``"-"*12 + "x"`` against a long run of dashes.)
+    """
+    pattern = "".join(f"(?>.*?{re.escape(ch)})" for ch in query)
+    return re.compile(pattern, re.IGNORECASE | re.DOTALL)
 
 
 def rank(
@@ -224,14 +233,21 @@ def rank(
     # Leading whitespace never matters to the shell; trailing whitespace does
     # ("git " means the user finished the word), so keep it.
     query = query.lstrip()
-    if limit <= 0 or len(query.strip()) < cfg.min_input_length:
+    stripped = query.strip()
+    if limit <= 0 or not cfg.min_input_length <= len(stripped) <= cfg.max_input_length:
         return []
-    prefilter = _fuzzy_prefilter(query.strip())
+    prefilter = _fuzzy_prefilter(stripped)
 
+    # Filter on the raw command string *before* validating/merging: profiling
+    # showed per-candidate validation was over half the ranking time, and most
+    # candidates fail this cheap C-level check anyway.
+    plausible = (
+        c
+        for c in candidates
+        if isinstance(command := getattr(c, "command", None), str) and prefilter.match(command)
+    )
     scored: list[tuple[tuple[float, float, int, str], Suggestion]] = []
-    for cand in merge_duplicates(candidates):
-        if not prefilter.search(cand.command):
-            continue
+    for cand in merge_duplicates(plausible):
         quality, kind = match_quality(query, cand.command)
         if quality < cfg.min_match:
             continue

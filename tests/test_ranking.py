@@ -145,3 +145,39 @@ def test_pick_inline_skips_exact_match() -> None:
     chosen = pick_inline("git status", results)
     assert chosen is not None and chosen.command == "git status -sb"
     assert pick_inline("ls", []) is None
+
+
+def _is_subsequence(query: str, text: str) -> bool:
+    it = iter(text.lower())
+    return all(ch in it for ch in query.lower())
+
+
+def test_prefilter_matches_reference_subsequence_check() -> None:
+    import random
+
+    from termpilot.ranking import _fuzzy_prefilter
+
+    rnd = random.Random(1)
+    alphabet = "ab-. *\\x"
+    for _ in range(3000):
+        q = "".join(rnd.choice(alphabet) for _ in range(rnd.randint(1, 5)))
+        text = "".join(rnd.choice(alphabet + "AB") for _ in range(rnd.randint(0, 12)))
+        assert bool(_fuzzy_prefilter(q).match(text)) == _is_subsequence(q, text), (q, text)
+
+
+def test_pathological_input_does_not_backtrack() -> None:
+    # Regression: the original `a.*?b.*?c` prefilter backtracked
+    # catastrophically here (minutes per candidate).
+    import time
+
+    cands = [Candidate("echo " + "-" * 400), Candidate("a" * 4000), Candidate("-" * 4000)]
+    start = time.perf_counter()
+    for query in ["-" * 12 + "x", "a" * 25 + "b", "-" * 30 + "z"]:
+        assert rank(query, cands, now=NOW) == []
+    assert time.perf_counter() - start < 1.0
+
+
+def test_overlong_input_returns_nothing() -> None:
+    cands = [Candidate("x" * 600)]
+    assert rank("x" * 600, cands, now=NOW) == []
+    assert rank("x" * 600, cands, now=NOW, config=RankingConfig(max_input_length=1000)) != []
