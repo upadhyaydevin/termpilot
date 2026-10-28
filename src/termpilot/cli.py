@@ -236,6 +236,29 @@ def cmd_uninstall_zsh(args: argparse.Namespace, config: Config) -> int:
     return EXIT_OK
 
 
+def cmd_benchmark(args: argparse.Namespace, config: Config) -> int:
+    from termpilot.benchmark import format_report, run_benchmark, save_json
+
+    def log(msg: str) -> None:
+        if not args.quiet:
+            print(msg, file=sys.stderr)
+
+    report = run_benchmark(
+        args.sizes,
+        queries=args.queries,
+        process_runs=args.runs,
+        seed=args.seed,
+        log=log,
+    )
+    text = format_report(report)
+    print(text)
+    if args.json:
+        save_json(report, args.json)
+    if args.markdown:
+        args.markdown.write_text(text + "\n", encoding="utf-8")
+    return EXIT_OK
+
+
 class _Report:
     def __init__(self) -> None:
         self.failures = 0
@@ -388,6 +411,19 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--zshrc", type=Path, help="file to edit (default: $ZDOTDIR/.zshrc)")
         p.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
         p.set_defaults(func=func)
+
+    p = sub.add_parser("benchmark", help="measure latency on synthetic history (no real data)")
+    p.add_argument(
+        "--sizes", type=_positive_int, nargs="+", default=[1000, 10000, 100000],
+        help="history sizes to test (default: 1000 10000 100000)",
+    )  # fmt: skip
+    p.add_argument("--queries", type=_positive_int, default=200, help="queries per size")
+    p.add_argument("--runs", type=int, default=30, help="subprocess runs per size (0 to skip)")
+    p.add_argument("--seed", type=int, default=42, help="random seed for the dataset")
+    p.add_argument("--json", type=Path, help="also write raw results as JSON")
+    p.add_argument("--markdown", type=Path, help="also write the report as Markdown")
+    p.add_argument("-q", "--quiet", action="store_true", help="no progress messages")
+    p.set_defaults(func=cmd_benchmark)
 
     p = sub.add_parser("purge", help="delete the index and context log (not your history)")
     p.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
