@@ -96,3 +96,101 @@ def test_help_exits_cleanly(capsys: pytest.CaptureFixture[str]) -> None:
         main(["--help"])
     assert exc.value.code == 0
     assert "suggest" in capsys.readouterr().out
+
+
+def test_doctor_healthy(capsys: pytest.CaptureFixture[str], sample_history: Path) -> None:
+    code, out, _ = run(capsys, "--history", str(sample_history), "doctor")
+    assert code == 0, out
+    assert "all checks passed" in out
+    assert "10 commands" in out
+    assert "git status" not in out  # never prints history content
+
+
+def test_doctor_reports_failures(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    code, out, _ = run(
+        capsys, "--history", str(tmp_path / "nope"), "--data-dir", str(tmp_path / "x"), "doctor"
+    )
+    assert code == 4
+    assert "FAIL  history" in out and "FAIL  index" in out
+    assert "termpilot index" in out
+
+
+def test_doctor_detects_corrupt_index(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    data = tmp_path / "corrupt"
+    data.mkdir()
+    (data / "index.db").write_bytes(b"garbage" * 200)
+    code, out, _ = run(capsys, "--data-dir", str(data), "doctor")
+    assert code == 4 and "FAIL  index" in out and "--rebuild" in out
+
+
+def test_suggest_on_corrupt_index_is_actionable(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    data = tmp_path / "corrupt"
+    data.mkdir()
+    (data / "index.db").write_bytes(b"garbage" * 200)
+    code, out, err = run(capsys, "--data-dir", str(data), "suggest", "git")
+    assert code == 4 and out == "" and "--rebuild" in err
+
+
+def test_index_recovers_corrupt_db(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, sample_history: Path
+) -> None:
+    data = tmp_path / "corrupt"
+    data.mkdir()
+    (data / "index.db").write_bytes(b"garbage" * 200)
+    code, _, err = run(capsys, "--data-dir", str(data), "--history", str(sample_history), "index")
+    assert code == 0 and "moved it to" in err
+    code, out, _ = run(capsys, "--data-dir", str(data), "suggest", "docker")
+    assert code == 0 and "docker compose up -d" in out
+
+
+def test_purge_requires_confirmation_noninteractive(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    code, _, err = run(capsys, "purge")
+    assert code == 4 and "--yes" in err
+    assert (tmp_path / "data" / "index.db").exists()
+
+
+def test_purge_deletes_only_termpilot_files(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, sample_history: Path
+) -> None:
+    data = tmp_path / "data"
+    (data / "context.log").write_text("1\t/x\tls\n")
+    (data / "unrelated.txt").write_text("keep me")
+    before = sample_history.read_bytes()
+    code, out, _ = run(capsys, "purge", "--yes")
+    assert code == 0 and "deleted" in out
+    assert not (data / "index.db").exists() and not (data / "context.log").exists()
+    assert (data / "unrelated.txt").exists()
+    assert sample_history.read_bytes() == before
+    code, out, _ = run(capsys, "purge", "--yes")
+    assert code == 0 and "nothing to delete" in out
+
+
+@pytest.mark.parametrize("value", ["0", "-3", "many"])
+def test_invalid_max_is_usage_error(capsys: pytest.CaptureFixture[str], value: str) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(["suggest", "-n", value, "git"])
+    assert exc.value.code == 2
+
+
+def test_unexpected_errors_are_concise_unless_debug(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_: object, **__: object) -> None:
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr("termpilot.cli.rank", boom)
+    code, _, err = run(capsys, "suggest", "git")
+    assert code == 70 and "kaboom" in err and "Traceback" not in err
+    with pytest.raises(RuntimeError):
+        main(["--debug", "suggest", "git"])
+
+
+def test_version(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        main(["--version"])
+    assert capsys.readouterr().out.startswith("termpilot 0.1.0")
