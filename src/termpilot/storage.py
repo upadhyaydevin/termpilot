@@ -20,7 +20,6 @@ re-imported from scratch.
 
 from __future__ import annotations
 
-import hashlib
 import os
 import sqlite3
 import time
@@ -29,6 +28,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from termpilot.errors import TermPilotError
 from termpilot.history import ParseStats, check_readable, iter_context_log, iter_history
 from termpilot.ranking import Candidate
 
@@ -97,7 +97,7 @@ ON CONFLICT (directory, command) DO UPDATE SET
 _COUNT = "max(hist_count, log_count)"
 
 
-class StorageError(Exception):
+class StorageError(TermPilotError):
     """The index is missing, locked, corrupt, or from an incompatible version."""
 
 
@@ -242,6 +242,8 @@ def transaction(conn: sqlite3.Connection) -> Iterator[None]:
 
 def _anchor_hashes(path: Path, offset: int) -> tuple[str, str]:
     """Hash the first and last few KB of the already-consumed region."""
+    import hashlib  # refresh-only; kept off the per-keystroke import path
+
     with path.open("rb") as handle:
         head = handle.read(min(offset, _ANCHOR_BYTES))
         tail_start = max(0, offset - _ANCHOR_BYTES)

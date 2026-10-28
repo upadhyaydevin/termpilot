@@ -8,15 +8,17 @@ Exit codes:
   4  history or data error (missing/unreadable files, unusable index);
      for ``doctor``: at least one check failed
   70 unexpected internal error (rerun with ``--debug`` for a traceback)
+
+Imports used only by rarely-run commands (doctor, install-zsh, JSON output)
+live inside those functions: the zsh widget starts this program on every
+keystroke, and module imports were measured as the largest share of its
+latency (see docs/design-decisions.md).
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
-import platform
-import shutil
 import sqlite3
 import sys
 import time
@@ -25,6 +27,7 @@ from pathlib import Path
 
 from termpilot import __version__
 from termpilot.config import Config, ConfigError, load_config
+from termpilot.errors import TermPilotError
 from termpilot.history import HistoryError, check_readable
 from termpilot.ranking import pick_inline, rank
 from termpilot.storage import (
@@ -101,6 +104,8 @@ def cmd_suggest(args: argparse.Namespace, config: Config) -> int:
     if not results:
         return EXIT_NO_MATCH
     if args.format == "json":
+        import json
+
         payload = [
             {"command": s.command, "score": s.score, "match": s.match_kind, "features": s.features}
             for s in results
@@ -126,6 +131,15 @@ def _data_files(config: Config) -> list[Path]:
     return [f for f in files if f.exists()]
 
 
+def _confirm(question: str, assume_yes: bool) -> bool | None:
+    """True/False from the user; None if we cannot ask (no terminal, no --yes)."""
+    if assume_yes:
+        return True
+    if not sys.stdin.isatty():
+        return None
+    return input(f"{question} [y/N] ").strip().lower() in ("y", "yes")
+
+
 def cmd_purge(args: argparse.Namespace, config: Config) -> int:
     files = _data_files(config)
     if not files:
@@ -134,19 +148,91 @@ def cmd_purge(args: argparse.Namespace, config: Config) -> int:
     print("This deletes TermPilot's own data (your zsh history file is not touched):")
     for f in files:
         print(f"  {f}")
-    if not args.yes:
-        if not sys.stdin.isatty():
-            print(
-                "termpilot: refusing to delete without --yes (stdin is not a terminal)",
-                file=sys.stderr,
-            )
-            return EXIT_DATA
-        if input("Delete these files? [y/N] ").strip().lower() not in ("y", "yes"):
-            print("aborted")
-            return EXIT_OK
+    answer = _confirm("Delete these files?", args.yes)
+    if answer is None:
+        print(
+            "termpilot: refusing to delete without --yes (stdin is not a terminal)",
+            file=sys.stderr,
+        )
+        return EXIT_DATA
+    if not answer:
+        print("aborted")
+        return EXIT_OK
     for f in files:
         f.unlink()
     print(f"deleted {len(files)} file(s)")
+    return EXIT_OK
+
+
+def cmd_paths(args: argparse.Namespace, config: Config) -> int:
+    """Machine-readable key=value paths (read by the zsh integration)."""
+    from termpilot.integration import zsh_script_path
+
+    print(f"config={config.config_path or ''}")
+    print(f"history={config.history_path}")
+    print(f"data_dir={config.data_dir}")
+    print(f"database={config.db_path}")
+    print(f"context_log={config.context_log_path if config.context_enabled else ''}")
+    print(f"zsh_script={zsh_script_path()}")
+    return EXIT_OK
+
+
+def cmd_init(args: argparse.Namespace, config: Config) -> int:
+    from termpilot.integration import snippet
+
+    print("# Add these lines to your ~/.zshrc (or run `termpilot install-zsh`):")
+    print(snippet(), end="")
+    return EXIT_OK
+
+
+def cmd_install_zsh(args: argparse.Namespace, config: Config) -> int:
+    from termpilot.integration import default_zshrc, install, is_installed, snippet
+
+    zshrc = args.zshrc or default_zshrc()
+    if is_installed(zshrc):
+        print(f"already installed in {zshrc.resolve()}")
+        return EXIT_OK
+    print(f"This appends the following block to {zshrc.resolve()} (a backup is made first):\n")
+    print(snippet())
+    answer = _confirm("Proceed?", args.yes)
+    if answer is None:
+        print(
+            "termpilot: refusing to edit without --yes (stdin is not a terminal)", file=sys.stderr
+        )
+        return EXIT_DATA
+    if not answer:
+        print("aborted; nothing changed")
+        return EXIT_OK
+    result = install(zshrc)
+    if result.backup:
+        print(f"backup: {result.backup}")
+    print("installed. Open a new terminal (or run `exec zsh`) to start using TermPilot.")
+    if not config.db_path.exists():
+        print("tip: run `termpilot index` once now to import your existing history.")
+    return EXIT_OK
+
+
+def cmd_uninstall_zsh(args: argparse.Namespace, config: Config) -> int:
+    from termpilot.integration import default_zshrc, is_installed, uninstall
+
+    zshrc = args.zshrc or default_zshrc()
+    if not is_installed(zshrc):
+        print(f"no TermPilot block found in {zshrc.resolve()}; nothing to do")
+        return EXIT_OK
+    answer = _confirm(f"Remove the TermPilot block from {zshrc.resolve()}?", args.yes)
+    if answer is None:
+        print(
+            "termpilot: refusing to edit without --yes (stdin is not a terminal)", file=sys.stderr
+        )
+        return EXIT_DATA
+    if not answer:
+        print("aborted; nothing changed")
+        return EXIT_OK
+    result = uninstall(zshrc)
+    if result.backup:
+        print(f"backup: {result.backup}")
+    print("removed. Open a new terminal for it to take effect.")
+    print("To also delete TermPilot's index and context log: termpilot purge")
     return EXIT_OK
 
 
@@ -171,6 +257,11 @@ def _mode(path: Path) -> str:
 
 def cmd_doctor(args: argparse.Namespace, config: Config) -> int:
     """Check the environment. Reports sizes and counts, never command text."""
+    import platform
+    import shutil
+
+    from termpilot.integration import IntegrationError, default_zshrc, is_installed
+
     r = _Report()
     print(f"termpilot {__version__}")
 
@@ -234,6 +325,15 @@ def cmd_doctor(args: argparse.Namespace, config: Config) -> int:
     else:
         r.ok("context", "no context log yet (created once the zsh integration runs)")
 
+    try:
+        zshrc = default_zshrc()
+        if is_installed(zshrc):
+            r.ok("zsh setup", f"TermPilot block found in {zshrc}")
+        else:
+            r.warn("zsh setup", f"not enabled in {zshrc}; see `termpilot init zsh`")
+    except IntegrationError as exc:
+        r.warn("zsh setup", str(exc))
+
     print("all checks passed" if not r.failures else f"{r.failures} check(s) failed")
     return EXIT_OK if not r.failures else EXIT_DATA
 
@@ -273,6 +373,22 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("doctor", help="check configuration, history, index and shell setup")
     p.set_defaults(func=cmd_doctor)
 
+    p = sub.add_parser("paths", help="print file locations as key=value lines")
+    p.set_defaults(func=cmd_paths)
+
+    p = sub.add_parser("init", help="print the snippet that enables TermPilot in your shell")
+    p.add_argument("shell", choices=["zsh"])
+    p.set_defaults(func=cmd_init)
+
+    for name, func, verb in (
+        ("install-zsh", cmd_install_zsh, "add TermPilot to"),
+        ("uninstall-zsh", cmd_uninstall_zsh, "remove TermPilot from"),
+    ):
+        p = sub.add_parser(name, help=f"{verb} your .zshrc (asks first; makes a backup)")
+        p.add_argument("--zshrc", type=Path, help="file to edit (default: $ZDOTDIR/.zshrc)")
+        p.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
+        p.set_defaults(func=func)
+
     p = sub.add_parser("purge", help="delete the index and context log (not your history)")
     p.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
     p.set_defaults(func=cmd_purge)
@@ -309,7 +425,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_CONFIG
     try:
         return int(args.func(args, config))
-    except (HistoryError, StorageError) as exc:
+    except TermPilotError as exc:
         print(f"termpilot: {exc}", file=sys.stderr)
         return EXIT_DATA
     except sqlite3.Error as exc:

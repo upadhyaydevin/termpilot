@@ -25,6 +25,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from termpilot.errors import TermPilotError
+
 ZSH_META = 0x83
 
 # Commands longer than this are almost always pasted scripts or heredocs;
@@ -37,7 +39,7 @@ _EXTENDED_RE = re.compile(rb"^: ?(\d{1,12})(?::(\d{1,12}))?;(.*)\Z", re.DOTALL)
 _UNSAFE_CHARS_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 
-class HistoryError(Exception):
+class HistoryError(TermPilotError):
     """A history or context-log file could not be read."""
 
 

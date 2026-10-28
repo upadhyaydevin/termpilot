@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import os
 import sys
-import tomllib
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
@@ -108,6 +107,8 @@ def load_config(
     data: dict[str, Any] = {}
     loaded: Path | None = None
     if config_path.is_file():
+        import tomllib  # only needed when a config file exists (saves ~3 ms/keystroke)
+
         try:
             data = tomllib.loads(config_path.read_text(encoding="utf-8"))
         except tomllib.TOMLDecodeError as exc:
