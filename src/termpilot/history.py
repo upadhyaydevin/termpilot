@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,6 +57,9 @@ class ParseStats:
     unsafe: int = 0
     too_long: int = 0
     malformed: int = 0
+    # Byte offset just past the last *complete* line consumed, including lines
+    # that were skipped. Resuming from here never re-reads or loses data.
+    end_offset: int = 0
 
     @property
     def skipped(self) -> int:
@@ -130,8 +134,8 @@ def _decode_history_bytes(raw: bytes, stats: ParseStats) -> str | None:
     return _clean_command(text, stats)
 
 
-def _open_for_reading(path: Path, label: str) -> int:
-    """Return the file size, raising ``HistoryError`` with an actionable message."""
+def check_readable(path: Path, label: str) -> None:
+    """Raise ``HistoryError`` with an actionable message unless ``path`` is readable."""
     try:
         st = path.stat()
     except FileNotFoundError:
@@ -140,9 +144,10 @@ def _open_for_reading(path: Path, label: str) -> int:
         raise HistoryError(f"permission denied reading {label}: {path}") from None
     except OSError as exc:
         raise HistoryError(f"cannot access {label} {path}: {exc.strerror}") from None
-    if not path.is_file():
+    if not stat.S_ISREG(st.st_mode):
         raise HistoryError(f"{label} is not a regular file: {path}")
-    return st.st_size
+    if not os.access(path, os.R_OK):
+        raise HistoryError(f"permission denied reading {label}: {path}")
 
 
 def _iter_logical_lines(path: Path, start: int, label: str) -> Iterator[tuple[bytes, int, bool]]:
@@ -192,10 +197,13 @@ def iter_history(
     that zsh is still writing is picked up on the next refresh instead.
     """
     stats = stats if stats is not None else ParseStats()
-    _open_for_reading(path, "history file")
+    stats.end_offset = start_offset
+    check_readable(path, "history file")
     for raw, end, complete in _iter_logical_lines(path, start_offset, "history file"):
         if not complete and not include_incomplete:
             return
+        if complete:
+            stats.end_offset = end
         timestamp: int | None = None
         match = _EXTENDED_RE.match(raw)
         if match:
@@ -244,10 +252,12 @@ def iter_context_log(
     path: Path, *, start_offset: int = 0, stats: ParseStats | None = None
 ) -> Iterator[ContextEntry]:
     stats = stats if stats is not None else ParseStats()
-    _open_for_reading(path, "context log")
+    stats.end_offset = start_offset
+    check_readable(path, "context log")
     for raw, end, complete in _iter_raw_lines(path, start_offset):
         if not complete:
             return
+        stats.end_offset = end
         parts = raw.split(b"\t")
         if len(parts) != 3 or not parts[0].isdigit():
             stats.malformed += 1

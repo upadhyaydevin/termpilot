@@ -14,6 +14,12 @@ def run(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, str, str]:
     return code, out, err
 
 
+@pytest.fixture(autouse=True)
+def indexed(capsys: pytest.CaptureFixture[str], sample_history: Path) -> None:
+    """Every test starts with the synthetic fixture indexed into a temp data dir."""
+    assert run(capsys, "--history", str(sample_history), "index", "--quiet")[0] == 0
+
+
 def test_suggest_text(capsys: pytest.CaptureFixture[str], sample_history: Path) -> None:
     code, out, _ = run(capsys, "--history", str(sample_history), "suggest", "git che")
     assert code == 0
@@ -52,9 +58,30 @@ def test_suggest_no_match(capsys: pytest.CaptureFixture[str], sample_history: Pa
 
 
 def test_missing_history_is_actionable(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
-    code, _, err = run(capsys, "--history", str(tmp_path / "nope"), "suggest", "git")
+    code, _, err = run(capsys, "--history", str(tmp_path / "nope"), "index")
     assert code == 4
     assert "not found" in err
+
+
+def test_suggest_without_index(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    code, _, err = run(capsys, "--data-dir", str(tmp_path / "empty"), "suggest", "git")
+    assert code == 4
+    assert "termpilot index" in err
+
+
+def test_index_reports_progress(capsys: pytest.CaptureFixture[str], sample_history: Path) -> None:
+    code, out, _ = run(capsys, "--history", str(sample_history), "index")
+    assert code == 0
+    assert "history:  unchanged" in out
+    code, out, _ = run(capsys, "--history", str(sample_history), "index", "--rebuild")
+    assert "history:  full, 12 new entries" in out
+
+
+def test_stats(capsys: pytest.CaptureFixture[str]) -> None:
+    code, out, _ = run(capsys, "stats")
+    assert code == 0
+    assert "commands:     10" in out
+    assert "git" not in out
 
 
 def test_bad_config(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:

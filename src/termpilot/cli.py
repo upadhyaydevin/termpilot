@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from collections.abc import Sequence
@@ -19,8 +20,17 @@ from pathlib import Path
 
 from termpilot import __version__
 from termpilot.config import Config, ConfigError, load_config
-from termpilot.history import HistoryError, iter_history
-from termpilot.ranking import Candidate, pick_inline, rank
+from termpilot.history import HistoryError
+from termpilot.ranking import pick_inline, rank
+from termpilot.storage import (
+    StorageError,
+    fetch_candidates,
+    index_stats,
+    open_readonly,
+    open_writable,
+    rebuild,
+    refresh,
+)
 
 EXIT_OK = 0
 EXIT_NO_MATCH = 1
@@ -28,21 +38,52 @@ EXIT_CONFIG = 3
 EXIT_DATA = 4
 
 
-def _candidates_from_history(path: Path) -> list[Candidate]:
-    counts: dict[str, int] = {}
-    last: dict[str, int | None] = {}
-    for entry in iter_history(path):
-        counts[entry.command] = counts.get(entry.command, 0) + 1
-        if entry.timestamp is not None:
-            prev = last.get(entry.command)
-            last[entry.command] = max(prev or 0, entry.timestamp)
-        else:
-            last.setdefault(entry.command, None)
-    return [Candidate(cmd, n, last.get(cmd)) for cmd, n in counts.items()]
+def _current_dir() -> str | None:
+    try:
+        return os.getcwd()
+    except OSError:  # the directory was deleted out from under the shell
+        return None
+
+
+def cmd_index(args: argparse.Namespace, config: Config) -> int:
+    conn, recovered = open_writable(config.db_path)
+    try:
+        if recovered is not None:
+            print(f"termpilot: index was corrupt; moved it to {recovered}", file=sys.stderr)
+        if args.rebuild:
+            rebuild(conn)
+        context = config.context_log_path if config.context_enabled else None
+        result = refresh(conn, config.history_path, context)
+        stats = index_stats(conn)
+    finally:
+        conn.close()
+    if not args.quiet:
+        h, c = result.history, result.context
+        print(f"history:  {h.mode}, {h.entries} new entries, {h.stats.skipped} skipped")
+        print(f"context:  {c.mode}, {c.entries} new entries, {c.stats.skipped} skipped")
+        print(f"index:    {stats.commands} distinct commands, {stats.directories} directories")
+    return EXIT_OK
+
+
+def cmd_stats(args: argparse.Namespace, config: Config) -> int:
+    conn = open_readonly(config.db_path)
+    try:
+        stats = index_stats(conn)
+    finally:
+        conn.close()
+    print(f"commands:     {stats.commands}")
+    print(f"directories:  {stats.directories}")
+    print(f"database:     {config.db_path} ({config.db_path.stat().st_size} bytes)")
+    return EXIT_OK
 
 
 def cmd_suggest(args: argparse.Namespace, config: Config) -> int:
-    candidates = _candidates_from_history(config.history_path)
+    cwd = (args.cwd or _current_dir()) if config.context_enabled else None
+    conn = open_readonly(config.db_path)
+    try:
+        candidates = fetch_candidates(conn, args.text, cwd)
+    finally:
+        conn.close()
     results = rank(args.text, candidates, now=time.time(), config=config.ranking)
     if args.format == "inline":
         best = pick_inline(args.text, results)
@@ -79,10 +120,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-dir", type=Path, help="directory for the index database")
     sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
+    p = sub.add_parser("index", help="import new history into the index")
+    p.add_argument("--rebuild", action="store_true", help="discard the index and re-import")
+    p.add_argument("-q", "--quiet", action="store_true", help="print nothing on success")
+    p.set_defaults(func=cmd_index)
+
+    p = sub.add_parser("stats", help="show index size (counts only, no commands)")
+    p.set_defaults(func=cmd_stats)
+
     p = sub.add_parser("suggest", help="print ranked suggestions for TEXT")
     p.add_argument("text", help="the partially typed command")
     p.add_argument("-n", "--max", type=int, dest="max_suggestions", help="number of results")
     p.add_argument("--explain", action="store_true", help="show scores and features")
+    p.add_argument("--cwd", help="directory to use for context (default: current)")
     p.add_argument(
         "--format",
         choices=["text", "json", "inline"],
@@ -108,6 +158,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_CONFIG
     try:
         return int(args.func(args, config))
-    except HistoryError as exc:
+    except (HistoryError, StorageError) as exc:
         print(f"termpilot: {exc}", file=sys.stderr)
         return EXIT_DATA
