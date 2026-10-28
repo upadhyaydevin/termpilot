@@ -4,9 +4,10 @@
 # type, the best match from your history appears as dimmed "ghost text"
 # after the cursor.
 #
-#   Right arrow, End, Ctrl-E   (cursor at end of line) accept the suggestion
-#                              into the command line. It is NOT run: press
-#                              Enter yourself, as always.
+#   Right arrow, Ctrl-F, Ctrl-E, End   (cursor at end of line) accept the
+#                              suggestion into the command line. It is NOT
+#                              run: press Enter yourself, as always. (End
+#                              works where it is bound to end-of-line.)
 #   termpilot_disable          turn suggestions off in this shell
 #   termpilot_enable           turn them back on
 #
